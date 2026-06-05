@@ -3,7 +3,6 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using System.IO;
-using static manager;
 public static class Pieces
 {
     public const int None = 0;
@@ -24,9 +23,11 @@ public class manager : MonoBehaviour
         public PositionNode[] children;
         public int visits;
         public float[] evaluations;
+        public int wins;
         public PositionNode()
         {
             visits = 0;
+            wins = 0;
         }
     }
     public class Layer
@@ -213,6 +214,16 @@ public class manager : MonoBehaviour
     [SerializeField] private float learnrate;
     private float[][] accumulators;
     private Layer[][] networks;
+    [SerializeField] private float[] pawntable;
+    [SerializeField] private float[] kingtable;
+    [SerializeField] private float[] rooktable;
+    [SerializeField] private float[] bishoptable;
+    [SerializeField] private float[] knighttable;
+    [SerializeField] private float[] pawntable2;
+    [SerializeField] private float[] kingtable2;
+    [SerializeField] private float[] rooktable2;
+    [SerializeField] private float[] bishoptable2;
+    [SerializeField] private float[] knighttable2;
     private void Refresh_Accumulators(float[] inputs)
     {
         for (int t = 0; t < networks.Length; t++)
@@ -338,7 +349,6 @@ public class manager : MonoBehaviour
 
         }
         mse /= datapoints.Length;
-        Debug.Log(mse);
         for (int i = 0; i < layers.Length; i++)
         {
             layers[i].ApplyGradients(learnrate / datapoints.Length);
@@ -370,17 +380,79 @@ public class manager : MonoBehaviour
     float Evaluate()
     {
         float eval = 0;
+        int num_pieces = 0;
+        for (int i = 0; i < 64; i++)
+        {
+            if ((pieces[i] & 7) != 0)
+            {
+                num_pieces++;
+            }
+        }
+        float taper = 1 - (num_pieces / 32.0f);
         for(int i = 0; i < 64; i++)
         {
             float plv = piece_values[pieces[i] & 7];
-            if((pieces[i] & ~7) == 8)
+            bool piecewhite = (pieces[i] & ~7) == 8;
+            int piecenum = pieces[i] & 7;
+            if(piecenum == 0)
             {
+                continue;
+            }
+            int ee = piecewhite ? i : 63 - i;
+                if (piecenum == 1)
+                {
+                    plv += Mathf.Lerp(pawntable[ee], pawntable2[ee], taper) * 0.5f;
+                }
+                else if (piecenum == Pieces.Rook)
+                {
+                    plv += Mathf.Lerp(rooktable[ee], rooktable2[ee], taper) * 0.5f;
+                }
+                else if (piecenum == Pieces.Bishop)
+                {
+                    plv += Mathf.Lerp(bishoptable[ee], bishoptable2[ee], taper) * 0.5f;
+                }
+                else if(piecenum == Pieces.Knight)
+                {
+                    plv += Mathf.Lerp(knighttable[ee], knighttable2[ee], taper) * 0.5f;
+                }
+                else if(piecenum == 6)
+                {
+                    plv += Mathf.Lerp(kingtable[ee], kingtable2[ee], taper) * 0.5f;
+                }
+            if (pinned_pieces[i] != 0)
+            {
+                if (white_move)
+                {
+                    eval -= 1;
+                }
+                else
+                {
+                    eval += 1;
+                }
+            }
+            if (piecewhite)
+            {
+                if (attacked_white[i] > 0 && attacked_black[i] < 2)
+                {
+                    //Debug.Log("holy undefended on " + i);
+                    plv = plv * 0.1f;
+                }
                 eval += plv;
             }
             else
             {
+                if (attacked_black[i] > 0 && attacked_white[i] < 2)
+                {
+                   // Debug.Log("holy undefended on " + i);
+                    plv = plv * 0.1f;
+                }
                 eval -= plv;
             }
+
+        }
+        if (!white_move)
+        {
+            eval = -eval;
         }
         return eval;
     }
@@ -527,8 +599,7 @@ public class manager : MonoBehaviour
         black_promotion.SetActive(false);
     }
     private Position last_position;
-    const int samples = 50;
-    const float inv_temp = 0.2f;
+    const float inv_temp = 1f;
     bool insuf_material = false;
     IEnumerator Train_Random()
     {
@@ -745,8 +816,8 @@ public class manager : MonoBehaviour
         previous_positions.Clear();
         for (int i = 0; i < 64; i++)
         {
-            attacked_white[i] = false;
-            attacked_black[i] = false;
+            attacked_white[i] = 0;
+            attacked_black[i] = 0;
             pinned_pieces[i] = 0;
         }
         legalmoves = GenerateMoves(true);
@@ -796,8 +867,12 @@ public class manager : MonoBehaviour
             datapoints_list.Add(dat);
         }
     }
+    const float c_val = 1f;
+    const int samples = 20;
+    const float noise_magn = 1f;
     Move GenerateMove()
     {
+        bool this_forced = ForcedWin(white_move);
         //Debug.Log("search start");
         float max_score = -1;
         float[] games_scores = new float[legalmoves.Count];
@@ -806,15 +881,14 @@ public class manager : MonoBehaviour
         float tim = Time.realtimeSinceStartup;
         int actual_mates = 0;
         nnue_inputs = GetInputs(true);
-        float eval_now = Calculate(nnue_inputs, 2)[0];
-        Debug.Log(Time.realtimeSinceStartup - tim);
+        //Debug.Log(Time.realtimeSinceStartup - tim);
         for (int j = 0; j < legalmoves.Count; j++)
         {
+            bool debug_this = false;
             Move legalmove = legalmoves[j];
             float games_score = 0;
             
             MovePiece(legalmove);
-            nnue_inputs = GetInputs(true);
             last_position = StorePosition();
             last_previous_positions.Clear();
             last_previous_positions.AddRange(previous_positions);
@@ -822,94 +896,132 @@ public class manager : MonoBehaviour
             node.visits += 1;
             node.children = new PositionNode[legalmoves.Count];
             PositionNode current = node;
-            //from 5 to 45 samples
-            float new_eval = 1 - Calculate(nnue_inputs, 2)[0];
-            int this_samples = 30 + (int)(20 * Mathf.Clamp((new_eval - eval_now), -0.2f, 0.6f));
-            Debug.Log(this_samples);
+            int this_samples = samples;
+            float last_rand = -1;
             for (int i = 0; i < this_samples; i++)
             {
+                node.visits += 1;
                 int game_length = 0;
+                List<int> prev_nodes = new List<int>();
+                int last_visits = node.visits;
                 while (!white_win && !black_win)
                 {
                     nnue_inputs = GetInputs(true);
                     game_length++;
-                    float[] weights = new float[legalmoves.Count];
-                    float total_weight = 0;
-                     bool curr_evals = current.evaluations != null;
-                     if (!curr_evals)
-                     {
-                     current.evaluations = new float[legalmoves.Count];
+                    bool curr_evals = current.evaluations != null;
+                    if (!curr_evals)
+                    {
+                        current.evaluations = new float[legalmoves.Count];
                     }
-                     float current_eval = 0;
-                     if (white_move == last_position.white_move)
-                     {
-                    //lastposition white move is reversed but thise white move is not
-                        current_eval = Mathf.Clamp(CalculateNoSigmoid(nnue_inputs, 0)[0], -25, 25);
-                    //use less smart network
-                     }
-                      else
-                     {
-                     current_eval = Mathf.Clamp(CalculateNoSigmoid(nnue_inputs, 1)[0], -25, 25);
-                    //use better network
-                     }
+                    float current_eval = 0;
+                    current_eval = Evaluate();
+                    float max_ucb = -100;
+
+                    List<int> max_inds = new List<int>();
                     for (int t = 0; t < legalmoves.Count; t++)
                     {
-                          Move move = legalmoves[t];
+                        Move move = legalmoves[t];
                         MovePieceSimple(move);
-                          nnue_inputs = GetInputs(true);
-                      float cur_visits = 1;
-                      if (current.children[t] != null)
-                       {
-                      cur_visits = current.children[t].visits; 
-                      }
-                         float node_evaluation = 0;
-                       if (curr_evals)
-                      {
-                     node_evaluation = current.evaluations[t];
-                    }
-                          else
-                      {
+                        float cur_visits = 1;
+                        float win_probability = 0;
+                        if (current.children[t] != null)
+                        {
+                           cur_visits = current.children[t].visits;
+                           win_probability = (cur_visits + current.children[t].wins) / (float)(cur_visits * 2);
+                        }
+                        float node_evaluation = 0;
+                        if (curr_evals)
+                        {
+                           node_evaluation = current.evaluations[t];
+                        }
+                        else
+                        {
                             node_evaluation = Evaluate();
                     //node evaluation is for the side to move next, a pure evaluation without sigmoid scaling
-                      current.evaluations[t] = node_evaluation;
-                     }
-                    //node evaluation is actually opposite to current evaluation
-                     weights[t] = 1 / cur_visits * Mathf.Exp((-current_eval - node_evaluation) * inv_temp);
+                            current.evaluations[t] = node_evaluation;
+                        }
+                        float gaussian_noise = 0;
+                        if (last_rand == -1)
+                        {
+
+                            float u1, u2, w;
+                            do
+                            {
+                                u1 = UnityEngine.Random.Range(-1f, 1f);
+                                u2 = UnityEngine.Random.Range(-1f, 1f);
+                                w = u1 * u1 + u2 * u2;
+                            } while (w >= 1.0f || w == 0f);
+
+                            w = Mathf.Sqrt((-2.0f * Mathf.Log(w)) / w);
+                            gaussian_noise = u1 * w;
+                            last_rand = u2 * w;
+                        }
+                        else
+                        {
+                            gaussian_noise = last_rand;
+                        }
+                        node_evaluation += gaussian_noise * noise_magn;
+                        //node evaluation is actually opposite to current evaluation
+                        float winpr = 1 / (1 + Mathf.Pow(10, node_evaluation * 0.25f));
+                        //upper confidencee bound
+                        float ucb = Mathf.Lerp(win_probability, winpr, 1.0f / (float)(cur_visits)) + c_val * Mathf.Sqrt(Mathf.Log(last_visits) / cur_visits);
+                        if(debug_this)Debug.Log("upper confidence bound for " + move.start + " to " + move.end + " is " + ucb);
+                        if(ucb > max_ucb)
+                        {
+                            max_ucb = ucb;
+                            max_inds.Clear();
+                            max_inds.Add(t);
+                        }
+                        if(ucb == max_ucb)
+                        {
+                            max_inds.Add(t);
+                        }
                         UnMovePieceSimple(move);
-                       total_weight += weights[t];
-                     }
-                    float rnd_seed = UnityEngine.Random.Range(0, total_weight);
-                      float accum = 0;
-                       for (int t = 0; t < legalmoves.Count; t++)
-                     {
-                      if ((rnd_seed >= accum && rnd_seed < accum + weights[t]) || rnd_seed == total_weight)
-                      {
-                     if (current.children[t] == null)
-                     {
-                    current.children[t] = new PositionNode();
-                     }
-                         current = current.children[t];
-                        current.visits += 1;
-                        MovePiece(legalmoves[t]);
-                      if (current.children == null)
+                    }
+                    int max_ind = max_inds[UnityEngine.Random.Range(0, max_inds.Count)];
+                    if (current.children[max_ind] == null)
                     {
-                     current.children = new PositionNode[legalmoves.Count];
+                        current.children[max_ind] = new PositionNode();
                     }
-                     break;
+                    current = current.children[max_ind];
+                    prev_nodes.Add(max_ind);
+                    current.visits += 1;
+                    if(debug_this) Debug.Log("I choose to " + legalmoves[max_ind].start + " to " + legalmoves[max_ind].end);
+                    MovePiece(legalmoves[max_ind]);
+                    if (current.children == null)
+                    {
+                        current.children = new PositionNode[legalmoves.Count];
                     }
-                     accum += weights[t];
+                    if (!this_forced)
+                    {
+                        bool now_forc = ForcedWin(white_move);
+                        if (now_forc)
+                        {
+                            if (white_move)
+                            {
+                                white_win = true;
+                            }
+                            else
+                            {
+                                black_win = true;
+                            }
+                        }
                     }
+                    last_visits = current.visits;
                 }
+                int who_won = 0;
                 if (!last_position.white_move)
                 {
                     if(white_win && !black_win)
                     {
                         games_score += 1;
+                        who_won = 1;
                         actual_mates += 1;
                     }
                     else if(black_win && !white_win)
                     {
                         games_score -= 1;
+                        who_won = -1;
                         actual_mates += 1;
                     }
                 }
@@ -919,11 +1031,34 @@ public class manager : MonoBehaviour
                     {
                         games_score -= 1;
                         actual_mates += 1;
+                        who_won = -1;
                     }
                     else if (black_win && !white_win)
                     {
                         games_score += 1;
                         actual_mates += 1;
+                        who_won = 1;
+                    }
+                }
+                if(debug_this) Debug.Log("rollout end, " + who_won + " to my side won");
+                if(who_won != 0)
+                {
+                    current = node;
+                    //if the next move in the tree is mine or not
+                    int my_move = 1;
+                    for(int p = 0; p < prev_nodes.Count; p++)
+                    {
+                        current = current.children[prev_nodes[p]];
+                        my_move = -my_move;
+                        if (my_move == who_won)
+                        {
+                            current.wins += 1;
+                        }
+                        else
+                        {
+                            current.wins -= 1;
+                        }
+                        
                     }
                 }
                 //if(black_win && white_win)
@@ -952,7 +1087,11 @@ public class manager : MonoBehaviour
                 GetPosition(last_position);
                 List<Move> lst_move = GenerateMoves(!white_move);
                 legalmoves = GenerateMoves(white_move);
-                nnue_inputs = GetInputs(true);
+                if(games_score < -5)
+                {
+                    //this_samples = i + 1;
+                    //break;
+                }
             }
             games_score = (this_samples + games_score) / (float)(this_samples * 2);
             max_score = Mathf.Max(max_score, games_score);
@@ -964,15 +1103,6 @@ public class manager : MonoBehaviour
             List<Move> list_move = GenerateMoves(!white_move);
             legalmoves = GenerateMoves(white_move);
             UnMovePiece(legalmove);
-            nnue_inputs = GetInputs(true);
-            Datapoint[] datapoints = new Datapoint[1];
-            datapoints[0] = new Datapoint();
-            datapoints[0].inputs = nnue_inputs;
-            datapoints[0].outputs = new float[1] {games_score};
-            NeuralNetwork(datapoints, 0);
-            NeuralNetwork(datapoints, 1);
-            NeuralNetwork(datapoints, 2);
-            File.WriteAllBytes("Assets/networkdata", WeightsToByte());
             games_scores[j] = games_score;
 
             System.GC.Collect();
@@ -991,8 +1121,8 @@ public class manager : MonoBehaviour
         Debug.Log(Time.realtimeSinceStartup - tim);
         return max_moves[UnityEngine.Random.Range(0, max_moves.Count)];
     }
-    private bool[] attacked_white;
-    private bool[] attacked_black;
+    private int[] attacked_white;
+    private int[] attacked_black;
     private int[] pinned_pieces;
     private List<Position> previous_positions;
     private Position StorePosition()
@@ -1027,8 +1157,8 @@ public class manager : MonoBehaviour
                 pinned_pieces[i] = 0;
 
             }
-            if (for_white) attacked_black[i] = false;
-            else attacked_white[i] = false;
+            if (for_white) attacked_black[i] = 0;
+            else attacked_white[i] = 0;
         }
         for (int i = 0; i < 64; i++)
         {
@@ -1097,7 +1227,7 @@ public class manager : MonoBehaviour
                     {
                         if(Mathf.Abs(i / 8 - (i + 7) / 8) == 1)
                         {
-                            attacked_black[i + 7] = true;
+                            attacked_black[i + 7] += 1;
                         }
                         if (((pieces[i + 7] & 7) != 0 || ((pieces[i - 1] & 7) == 1 && ((pieces[i - 1] & ~7) == 8) != white && lastmove.start >= 0 && lastmove.start == i + 15 && lastmove.end == i - 1)) && !(((pieces[i + 7] & ~7) == 8) == white && (pieces[i + 7] & 7) != 0) && Mathf.Abs(i / 8 - (i + 7) / 8) == 1)
                         {
@@ -1126,7 +1256,7 @@ public class manager : MonoBehaviour
                         }
                         if (Mathf.Abs(i / 8 - (i + 9) / 8) == 1 && i + 9 < 64)
                         {
-                            attacked_black[i + 9] = true;
+                            attacked_black[i + 9]++;
                         }
                         if (i + 9 < 64 && (((pieces[i + 9] & 7) != 0) || ((pieces[i + 1] & 7) == 1 && ((pieces[i + 1] & ~7) == 8) != white && lastmove.start >= 0 && lastmove.start == i + 17 && lastmove.end == i + 1)) && !(((pieces[i + 9] & ~7) == 8) == white && (pieces[i + 9] & 7) != 0) && Mathf.Abs(i / 8 - (i + 9) / 8) == 1)
                         {
@@ -1159,7 +1289,7 @@ public class manager : MonoBehaviour
                     {
                         if (Mathf.Abs(i / 8 - (i - 7) / 8) == 1)
                         {
-                            attacked_white[i - 7] = true;
+                            attacked_white[i - 7]++;
                         }
                         if (((pieces[i - 7] & 7) != 0 || ((pieces[i + 1] & 7) == 1 && ((pieces[i + 1] & ~7) == 8) != white && lastmove.start >= 0 && lastmove.start == i - 15 && lastmove.end == i + 1)) && !(((pieces[i - 7] & ~7) == 8) == white && (pieces[i - 7] & 7) != 0) && Mathf.Abs(i / 8 - (i - 7) / 8) == 1)
                         {
@@ -1188,7 +1318,7 @@ public class manager : MonoBehaviour
                         }
                         if (Mathf.Abs(i / 8 - (i - 9) / 8) == 1 && i - 9 >= 0)
                         {
-                            attacked_white[i - 9] = true;
+                            attacked_white[i - 9]++;
                         }
                         if (i - 9 >= 0 && ((pieces[i - 9] & 7) != 0 || ((pieces[i - 1] & 7) == 1 && ((pieces[i - 1] & ~7) == 8) != white && lastmove.start >= 0 && lastmove.start == i - 17 && lastmove.end == i - 1)) && !(((pieces[i - 9] & ~7) == 8) == white && (pieces[i - 9] & 7) != 0) && Mathf.Abs(i / 8 - (i - 9) / 8) == 1)
                         {
@@ -1230,11 +1360,11 @@ public class manager : MonoBehaviour
                         {
                             if (for_white)
                             {
-                                attacked_black[full] = true;
+                                attacked_black[full]++;
                             }
                             else
                             {
-                                attacked_white[full] = true;
+                                attacked_white[full]++;
                             }
                             if (!(((pieces[full] & ~7) == 8) == white && (pieces[full] & 7) != 0))
                             {
@@ -1267,11 +1397,11 @@ public class manager : MonoBehaviour
                             {
                                 if (for_white)
                                 {
-                                    attacked_black[current] = true;
+                                    attacked_black[current]++;
                                 }
                                 else
                                 {
-                                    attacked_white[current] = true;
+                                    attacked_white[current]++;
                                 }
                                 if ((pieces[current] & 7) != 0 && currwhite == white)
                                 {
@@ -1331,17 +1461,17 @@ public class manager : MonoBehaviour
                             {
                                 if (for_white)
                                 {
-                                    attacked_black[current] = true;
+                                    attacked_black[current]++;
                                 }
                                 else
                                 {
-                                    attacked_white[current] = true;
+                                    attacked_white[current]++;
                                 }
                                 if ((pieces[current] & 7) != 0 && currwhite == white)
                                 {
                                     if ((pieces[current] & 7) == 6 && (white ? castlable_white : castlable_black) && !check)
                                     {
-                                        if ((white && !attacked_white[current - rookoffsets[t]] && !attacked_white[current - 2 * rookoffsets[t]]) || (!white && !attacked_black[current - rookoffsets[t]] && !attacked_black[current - 2 * rookoffsets[t]]))
+                                        if ((white && attacked_white[current - rookoffsets[t]] == 0 && attacked_white[current - 2 * rookoffsets[t]] == 0) || (!white && attacked_black[current - rookoffsets[t]] == 0 && attacked_black[current - 2 * rookoffsets[t]] == 0))
                                         {
                                             Move castl = new Move();
                                             castl.start = current;
@@ -1425,6 +1555,17 @@ public class manager : MonoBehaviour
                                 break;
                             }
                             bool currwhite = (pieces[current] & ~7) == 8;
+                            if (last_piece == -1)
+                            {
+                                if (for_white)
+                                {
+                                    attacked_black[current]++;
+                                }
+                                else
+                                {
+                                    attacked_white[current]++;
+                                }
+                            }
                             if ((pieces[current] & 7) != 0 && currwhite == white)
                             {
                                 if (lastmove.passant_target && lastmove.end == current)
@@ -1443,14 +1584,6 @@ public class manager : MonoBehaviour
                             }
                             if (last_piece == -1)
                             {
-                                if (for_white)
-                                {
-                                    attacked_black[current] = true;
-                                }
-                                else
-                                {
-                                    attacked_white[current] = true;
-                                }
                                 Move roo = new Move();
                                 roo.start = i;
                                 roo.end = current;
@@ -1500,11 +1633,11 @@ public class manager : MonoBehaviour
                             {
                                 if (for_white)
                                 {
-                                    attacked_black[current] = true;
+                                    attacked_black[current]++;
                                 }
                                 else
                                 {
-                                    attacked_white[current] = true;
+                                    attacked_white[current]++;
                                 }
                                 if ((pieces[current] & 7) != 0 && currwhite == white)
                                 {
@@ -1545,7 +1678,7 @@ public class manager : MonoBehaviour
                 else if (piecename == 6)
                 {
                     king_index = i;
-                    if ((for_white && attacked_white[i]) || (!for_white && attacked_black[i]))
+                    if ((for_white && attacked_white[i] > 0) || (!for_white && attacked_black[i] > 0))
                     {
                         check = true;
                     }
@@ -1560,15 +1693,15 @@ public class manager : MonoBehaviour
                         {
                             if (for_white)
                             {
-                                attacked_black[full] = true;
+                                attacked_black[full] ++;
                             }
                             else
                             {
-                                attacked_white[full] = true;
+                                attacked_white[full]++;
                             }
                             if (!(((pieces[full] & ~7) == 8) == white && (pieces[full] & 7) != 0))
                             {
-                                if ((for_white && attacked_white[full] == false) || (!for_white && attacked_black[full] == false))
+                                if ((for_white && attacked_white[full] == 0) || (!for_white && attacked_black[full] == 0))
                                 {
                                     Move kingmove = new Move();
                                     kingmove.start = i;
@@ -1723,6 +1856,7 @@ public class manager : MonoBehaviour
                     j -= 1;
                 }
             }
+
             //Debug.Log("check by " + attacking_index);
         }
 
@@ -1787,6 +1921,84 @@ public class manager : MonoBehaviour
         }
         return moves;
     }
+    bool ForcedWin(bool for_white)
+    {
+        bool forc = false;
+        int their_pieces = 0;
+        int my_queens = 0;
+        int my_rooks = 0;
+        int my_bishops = 0;
+        int my_knights = 0;
+        int their_rooks = 0;
+        int their_knights = 0;
+        int their_bishops = 0;
+        for(int i = 0; i < 64; i++)
+        {
+            int piece = pieces[i];
+            bool white = (piece & ~7) == 8;
+            int piecename = piece & 7;
+            if(white == for_white)
+            {
+                if(piecename == Pieces.Queen)
+                {
+                    my_queens++;
+                }
+                else if (piecename == Pieces.Rook)
+                {
+                    my_rooks++;
+                }
+                else if (piecename == Pieces.Knight)
+                {
+                    my_knights++;
+                }
+                else if (piecename == Pieces.Bishop)
+                {
+                    my_bishops++;
+                }
+            }
+            else if(piecename != 0)
+            {
+                their_pieces++;
+                if(piecename == Pieces.Rook)
+                {
+                    their_rooks++;
+                }
+                else if(piecename == Pieces.Knight)
+                {
+                    their_knights++;
+                }
+                else if(piecename == Pieces.Bishop)
+                {
+                    their_bishops++;
+                }
+            }
+        }
+        if (their_pieces == 1)
+        {
+            if (my_queens > 0 || my_rooks > 0 || my_bishops > 1 || (my_bishops == 1 && my_knights > 0))
+            {
+                forc = true;
+            }
+        }
+        else if(their_pieces == 2)
+        {
+            if((their_rooks + their_knights + their_bishops == 1 && my_queens > 0) || (my_rooks > 0 && my_bishops > 0 && their_rooks > 0) || (my_bishops > 1 && their_knights > 0) || (my_rooks > 1 && their_rooks > 0))
+            {
+                forc = true;
+            }
+        }
+        else if(their_pieces == 3)
+        {
+            if(my_queens > 0)
+            {
+                if(their_bishops + their_knights > 1)
+                {
+                    forc = true;
+                }
+            }
+        }
+        return forc;
+    }
     private bool white_win = false;
     private bool black_win = false;
     byte[] PiecesToBytes()
@@ -1847,8 +2059,8 @@ public class manager : MonoBehaviour
         two_moves = new Move();
         two_moves.start = -1;
         two_moves.end = -1;
-        attacked_white = new bool[64];
-        attacked_black = new bool[64];
+        attacked_white = new int[64];
+        attacked_black = new int[64];
         white_move = true;
         pieces = new int[64];
         pinned_pieces = new int[64];
@@ -1856,8 +2068,8 @@ public class manager : MonoBehaviour
         for(int i = 0; i < 64; i++)
         {
             pieces[i] = Pieces.White | Pieces.None;
-            attacked_white[i] = false;
-            attacked_black[i] = false;
+            attacked_white[i] = 0;
+            attacked_black[i] = 0;
             pinned_pieces[i] = 0;
         }
         FenToPosition("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR");
@@ -1872,9 +2084,9 @@ public class manager : MonoBehaviour
         //StartCoroutine(Test());
         nnue_inputs = GetInputs(false);
         Refresh_Accumulators(nnue_inputs);
-        Debug.Log(Calculate(nnue_inputs, 0)[0]);
-        Debug.Log(Calculate(nnue_inputs, 1)[0]);
-        Debug.Log(Calculate(nnue_inputs, 2)[0]);
+        //Debug.Log(Calculate(nnue_inputs, 0)[0]);
+        //Debug.Log(Calculate(nnue_inputs, 1)[0]);
+        //Debug.Log(Calculate(nnue_inputs, 2)[0]);
         float evaluat = Calculate(nnue_inputs, 2)[0];
         eval_bar.SetFloat("_progress", evaluat);
         datapoints_list = new List<Datapoint>();
@@ -1936,6 +2148,40 @@ public class manager : MonoBehaviour
             Debug.Log(Calculate(nnue_inputs, 0)[0]);
             File.WriteAllBytes("Assets/networkdata", WeightsToByte());
         }
+        if (Input.GetKey(KeyCode.O))
+        {
+            for(int i = 0; i < 64; i++)
+            {
+                if (attacked_black[i] > 0)
+                {
+                    highlight_squares[i].SetActive(true);
+                }
+            }
+        }
+        if(Input.GetKeyUp(KeyCode.O))
+        {
+            for(int i = 0; i < 64; i++)
+            {
+                highlight_squares[i].SetActive(false);
+            }
+        }
+        if (Input.GetKey(KeyCode.P))
+        {
+            for (int i = 0; i < 64; i++)
+            {
+                if (attacked_white[i] > 0)
+                {
+                    highlight_squares[i].SetActive(true);
+                }
+            }
+        }
+        if(Input.GetKeyUp(KeyCode.P))
+        {
+            for (int i = 0; i < 64; i++)
+            {
+                highlight_squares[i].SetActive(false);
+            }
+        }
         if (Input.GetKeyDown(KeyCode.M))
         {
             float[] weights = new float[legalmoves.Count];
@@ -1967,11 +2213,54 @@ public class manager : MonoBehaviour
         }
         if (Input.GetKeyDown(KeyCode.S))
         {
-            SaveDatapoints();
+            bool forkk = ForcedWin(white_move);
+            if (!forkk && !white_win && !black_win)
+            {
+
+                float[] weights = new float[legalmoves.Count];
+                float total_weight = 0;
+                float current_eval = 0;
+                current_eval = Evaluate();
+                Debug.Log("I think the position is " + current_eval);
+                for (int t = 0; t < legalmoves.Count; t++)
+                {
+                    Move move = legalmoves[t];
+                    MovePieceSimple(move);
+                    float node_evaluation = Evaluate();
+                    Debug.Log("I think the move from " + move.start + " to " + move.end + " is " + node_evaluation);
+                    weights[t] = Mathf.Exp(Mathf.Clamp((-current_eval - node_evaluation) * inv_temp, -250, 250));
+                    UnMovePieceSimple(move);
+                    total_weight += weights[t];
+                }
+                float rnd_seed = UnityEngine.Random.Range(0, total_weight);
+                float accum = 0;
+                for (int t = 0; t < legalmoves.Count; t++)
+                {
+                    if ((rnd_seed >= accum && rnd_seed < accum + weights[t]) || rnd_seed == total_weight)
+                    {
+                        MovePiece(legalmoves[t]);
+                        break;
+                    }
+                    accum += weights[t];
+                }
+            }
+            else
+            {
+                Debug.Log("gameend");
+            }
+
         }
         if (Input.GetKeyDown(KeyCode.Space))
         {
-            MovePiece(GenerateMove());
+            if(!white_win && !black_win)
+            {
+                MovePiece(GenerateMove());
+
+            }
+            else
+            {
+                Debug.Log("gameover");
+            }
             //StartCoroutine(GenerateMove());
         }
         //if (Input.GetKeyDown(KeyCode.Space))
@@ -1994,21 +2283,21 @@ public class manager : MonoBehaviour
             Debug.Log("attacked black:");
             for(int i = 0; i < 64; i ++)
             {
-                bool bl = attacked_black[i];
+                bool bl = attacked_black[i] > 0;
                 if(bl == true) Debug.Log(i);
                 if (!white_move)
                 {
-                    highlight_squares[i].SetActive(attacked_black[i]);
+                    highlight_squares[i].SetActive(attacked_black[i] > 0);
                 }
             }
             Debug.Log("attacked white: ");
             for (int i = 0; i < 64; i++)
             {
-                bool bl = attacked_white[i];
+                bool bl = attacked_white[i] > 0;
                 if (bl == true) Debug.Log(i);
                 if (white_move)
                 {
-                    highlight_squares[i].SetActive(attacked_white[i]);
+                    highlight_squares[i].SetActive(attacked_white[i] > 0);
                 }
             }
             Debug.Log("pinned pieces: ");
