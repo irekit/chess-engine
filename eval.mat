@@ -56,7 +56,7 @@ Material:
     - PixelSnap: 0
     - _EnableExternalAlpha: 0
     - _ZWrite: 0
-    - _progress: 1
+    - _progress: 0.6661404
     m_Colors:
     - _Color: {r: 1, g: 1, b: 1, a: 1}
     - _RendererColor: {r: 1, g: 1, b: 1, a: 1}

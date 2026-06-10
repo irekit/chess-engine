@@ -6,3 +6,7 @@ This is a chess engine using Monte-Carlo Tree Search (MCTS) combined with static
 
 Download the zip file, then uncompress it, and open the .exe file.
 
+
+
+No AI was used to write any code or generate any assets.
+

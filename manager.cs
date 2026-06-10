@@ -45,6 +45,7 @@ public class manager : MonoBehaviour
     [SerializeField] private float[] rooktable2;
     [SerializeField] private float[] bishoptable2;
     [SerializeField] private float[] knighttable2;
+    [SerializeField] private GameObject evalbar;
     private float trashcount = 0;
     float Evaluate()
     {
@@ -1452,6 +1453,7 @@ public class manager : MonoBehaviour
             Vector3 bly = black_promotion.transform.position;
             black_promotion.transform.position = white_promotion.transform.position;
             white_promotion.transform.position = bly;
+            evalbar.transform.Rotate(0, 0, 180);
         }
     }
     int currentind = 0;
@@ -1659,7 +1661,6 @@ public class manager : MonoBehaviour
         int white_bishops = 0;
         for(int i = 0; i < 64; i++)
         {
-            highlight_squares[i].SetActive(false);
             int piece_name = pieces[i] & 7;
             if (piece_name == 2)
             {
@@ -1741,6 +1742,10 @@ public class manager : MonoBehaviour
         }
         if (!search)
         {
+            for(int i = 0; i < 64; i++)
+            {
+                highlight_squares[i].SetActive(false);
+            }
             if (persist.flipped)
             {
                 highlight_squares[63 - tsmove.start].SetActive(true);
