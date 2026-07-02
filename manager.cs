@@ -3,6 +3,8 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using System.IO;
+using TMPro;
+using UnityEngine.SceneManagement;
 public static class Pieces
 {
     public const int None = 0;
@@ -222,6 +224,8 @@ public class manager : MonoBehaviour
     private Move two_moves;
     List<Move> legalmoves;
     private bool promoting = false;
+    [SerializeField] private GameObject textshow;
+    [SerializeField] private TextMeshProUGUI texta;
     [SerializeField] private GameObject white_promotion;
     [SerializeField] private GameObject black_promotion;
     [SerializeField] private GameObject[] highlight_squares;
@@ -1285,7 +1289,12 @@ public class manager : MonoBehaviour
                 {
                     if (for_white) black_win = true;
                     else white_win = true;
-                    if(!search) Debug.Log("checkmate");
+                    if (!search)
+                    {
+                        textshow.SetActive(true);
+                        texta.text = "Checkmate!";
+                        StartCoroutine(ReturnToMenu());
+                    }
                 }
             }   
             else
@@ -1294,7 +1303,12 @@ public class manager : MonoBehaviour
                 {
                     black_win = true;
                     white_win = true;
-                    if(!search) Debug.Log("stalemate");
+                    if (!search)
+                    {
+                        textshow.SetActive(true);
+                        texta.text = "Stalemate!";
+                        StartCoroutine(ReturnToMenu());
+                    }
                 }
             }
         }
@@ -1389,6 +1403,11 @@ public class manager : MonoBehaviour
         }
         return bytes;
     }
+    IEnumerator ReturnToMenu()
+    {
+        yield return new WaitForSeconds(3);
+        SceneManager.LoadScene(0);
+    }
     void LoadBytes(byte[] bytes)
     {
         for (int i = 0; i < 64; i++)
@@ -1399,6 +1418,7 @@ public class manager : MonoBehaviour
     private List<byte[]> last_previous_pieces;
     void Start()
     {
+        textshow.SetActive(false);
         //run editor in background
         Application.runInBackground = true;
         foreach (GameObject square in highlight_squares)
@@ -1652,7 +1672,12 @@ public class manager : MonoBehaviour
         {
             white_win = true;
             black_win = true;
-            if(!search)Debug.Log("draw by 50 move rule");
+            if (!search)
+            {
+                textshow.SetActive(true);
+                texta.text = "Draw by 50 move rule";
+                StartCoroutine(ReturnToMenu());
+            }
         }
         bool other_piece = false;
         int black_bishops = 0;
@@ -1724,7 +1749,12 @@ public class manager : MonoBehaviour
         {
             white_win = true;
             black_win = true;
-            if (!search) Debug.Log("draw by 3 fold repetition");
+            if (!search)
+            {
+                textshow.SetActive(true);
+                texta.text = "Draw by 3 fold repetition!";
+                StartCoroutine(ReturnToMenu());
+            }
         }
         if (!search)
         {
